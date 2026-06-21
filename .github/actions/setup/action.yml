@@ -19,6 +19,10 @@ inputs:
     description: "Path to upload as build artifact (empty string to skip)"
     required: false
     default: ""
+  build_tool:
+    description: 'Java build tool configuration (maven or gradle)'
+    required: false
+    default: 'maven'  # Keeps it backward compatible with your existing setup
 
 runs:
   using: "composite"
@@ -35,10 +39,14 @@ runs:
     # ── Python ───────────────────────────────────────────────────────────────
     - name: Setup Python
       if: inputs.language == 'python'
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ inputs.version }}
-        cache: "pip"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.version }}
+          cache: "pip"
 
     # ── Java ─────────────────────────────────────────────────────────────────
     - name: Setup Java
@@ -47,7 +55,7 @@ runs:
       with:
         java-version: ${{ inputs.version }}
         distribution: "temurin"
-        cache: "maven"
+        cache: ${{ inputs.build_tool }} # Dynamic cache engine selection    
 
     # ── Go ───────────────────────────────────────────────────────────────────
     - name: Setup Go

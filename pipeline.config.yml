@@ -4,7 +4,6 @@
 # =============================================================================
 # This is the ONLY file your team needs to edit.
 # Fill in the values below and the pipeline handles the rest.
-# Full documentation: .github/docs/SETUP.md
 # =============================================================================
 
 
@@ -22,7 +21,7 @@ project:
 # The pipeline auto-selects the correct setup, install, and build steps.
 #
 # Version reference:
-#   node   → "20", "18", "16"
+#   node   → "24", "20", "18", "16"
 #   python → "3.12", "3.11", "3.10"
 #   java   → "21", "17", "11"
 #   go     → "1.22", "1.21"
@@ -56,6 +55,7 @@ runtime:
 build:
   install_command: "uv run pip3 install -r requirements.txt"      # Command to install dependencies (required)
   build_command: "uv sync --frozen && uv cache prune --ci" # Set to "" if your project has no build step
+#  build_tool: "" # Uncomment this if the project is java (maven or gradle... maven is the default)
   artifact_path: ""         # Path to output directory (uploaded between stages)
                                  # Set to "" if no artifact is produced
 

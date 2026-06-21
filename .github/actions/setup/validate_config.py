@@ -24,7 +24,7 @@ SUPPORTED_LANGUAGES = {"node", "python", "java", "go", "csharp", "php"}
 
 # Suggested current stable versions per language — used in validator hints
 VERSION_HINTS = {
-    "node":   "e.g. '20', '18'",
+    "node":   "e.g. '24', '20', '18'",
     "python": "e.g. '3.12', '3.11'",
     "java":   "e.g. '21', '17'",
     "go":     "e.g. '1.22', '1.21'",
