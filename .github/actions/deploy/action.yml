@@ -100,6 +100,12 @@ runs:
     # =========================================================================
     - name: Pre-deploy checks
       shell: bash
+      env:
+        # Expose secrets to the environment so the Python script can validate them
+        RENDER_API_KEY: ${{ inputs.render_api_key }}
+        VERCEL_TOKEN: ${{ inputs.vercel_token }}
+        RAILWAY_TOKEN: ${{ inputs.railway_token }}
+        HEROKU_API_KEY: ${{ inputs.heroku_api_key }}
       run: |
         python3 "${{ github.action_path }}/pre_deploy_check.py" \
           --target    "${{ inputs.target }}" \
