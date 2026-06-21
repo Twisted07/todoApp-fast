@@ -1,0 +1,200 @@
+name: "Test and quality"
+description: "Runs tests, coverage, code quality checks, and generates the HTML report"
+
+inputs:
+  language:
+    description: "Runtime language"
+    required: true
+  unit_command:
+    description: "Unit test command"
+    required: true
+  integration_command:
+    description: "Integration test command (empty to skip)"
+    required: false
+    default: ""
+  coverage_command:
+    description: "Coverage command"
+    required: true
+  coverage_threshold:
+    description: "Minimum coverage % (0 to disable gate)"
+    required: false
+    default: "70"
+  coverage_report_path:
+    description: "Path where coverage report is written"
+    required: false
+    default: "coverage/"
+  quality_enabled:
+    description: "Whether to run code quality checks"
+    required: false
+    default: "true"
+  lint_strictness:
+    description: "strict | warn"
+    required: false
+    default: "warn"
+  analysis_strictness:
+    description: "strict | warn"
+    required: false
+    default: "warn"
+  lint_config_path:
+    description: "Path to lint config file (empty = use tool defaults)"
+    required: false
+    default: ""
+  analysis_level:
+    description: "Analysis depth level"
+    required: false
+    default: "5"
+
+outputs:
+  tests_passed:
+    description: "true if all required checks passed"
+    value: ${{ steps.gate.outputs.passed }}
+  coverage_pct:
+    description: "Measured coverage percentage"
+    value: ${{ steps.coverage-check.outputs.pct }}
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Download build artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: build-artifact
+      continue-on-error: true
+
+    # UNIT TESTS
+    - name: Run unit tests
+      id: unit-tests
+      shell: bash
+      run: |
+        echo "::group::Unit tests"
+        ${{ inputs.unit_command }}
+        echo "::endgroup::"
+
+    # INTEGRATION TESTS
+    - name: Run integration tests
+      id: integration-tests
+      if: inputs.integration_command != ''
+      shell: bash
+      run: |
+        echo "::group::Integration tests"
+        ${{ inputs.integration_command }}
+        echo "::endgroup::"
+
+    # COVERAGE
+    - name: Generate coverage report
+      shell: bash
+      run: |
+        echo "::group::Coverage"
+        ${{ inputs.coverage_command }}
+        echo "::endgroup::"
+
+    - name: Check coverage threshold
+      id: coverage-check
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/check_coverage.py" \
+          --report-path "${{ inputs.coverage_report_path }}" \
+          --threshold "${{ inputs.coverage_threshold }}" \
+          --language "${{ inputs.language }}"
+
+    # CODE QUALITY — per language
+    - name: "Quality — ESLint (Node)"
+      if: inputs.quality_enabled == 'true' && inputs.language == 'node'
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/run_quality.py" \
+          --language node \
+          --lint-strictness "${{ inputs.lint_strictness }}" \
+          --analysis-strictness "${{ inputs.analysis_strictness }}" \
+          --lint-config "${{ inputs.lint_config_path }}"
+
+    - name: "Quality — Flake8 + Pylint (Python)"
+      if: inputs.quality_enabled == 'true' && inputs.language == 'python'
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/run_quality.py" \
+          --language python \
+          --lint-strictness "${{ inputs.lint_strictness }}" \
+          --analysis-strictness "${{ inputs.analysis_strictness }}" \
+          --lint-config "${{ inputs.lint_config_path }}" \
+          --analysis-level "${{ inputs.analysis_level }}"
+
+    - name: "Quality — Checkstyle + SpotBugs (Java)"
+      if: inputs.quality_enabled == 'true' && inputs.language == 'java'
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/run_quality.py" \
+          --language java \
+          --lint-strictness "${{ inputs.lint_strictness }}" \
+          --analysis-strictness "${{ inputs.analysis_strictness }}" \
+          --lint-config "${{ inputs.lint_config_path }}"
+
+    - name: "Quality — golangci-lint + go vet (Go)"
+      if: inputs.quality_enabled == 'true' && inputs.language == 'go'
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/run_quality.py" \
+          --language go \
+          --lint-strictness "${{ inputs.lint_strictness }}" \
+          --analysis-strictness "${{ inputs.analysis_strictness }}" \
+          --lint-config "${{ inputs.lint_config_path }}"
+
+    - name: "Quality — dotnet-format + Roslyn (C#)"
+      if: inputs.quality_enabled == 'true' && inputs.language == 'csharp'
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/run_quality.py" \
+          --language csharp \
+          --lint-strictness "${{ inputs.lint_strictness }}" \
+          --analysis-strictness "${{ inputs.analysis_strictness }}" \
+          --lint-config "${{ inputs.lint_config_path }}"
+
+    - name: "Quality — PHPCS + PHPStan (PHP)"
+      if: inputs.quality_enabled == 'true' && inputs.language == 'php'
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/run_quality.py" \
+          --language php \
+          --lint-strictness "${{ inputs.lint_strictness }}" \
+          --analysis-strictness "${{ inputs.analysis_strictness }}" \
+          --lint-config "${{ inputs.lint_config_path }}" \
+          --analysis-level "${{ inputs.analysis_level }}"
+
+    # GATE
+    - name: Evaluate gate
+      id: gate
+      shell: bash
+      run: |
+        passed=true
+        if [ "${{ steps.unit-tests.outcome }}" != "success" ]; then
+          echo "::error::Unit tests failed."
+          passed=false
+        fi
+        if [ "${{ steps.coverage-check.outcome }}" != "success" ]; then
+          echo "::error::Coverage check failed."
+          passed=false
+        fi
+        echo "passed=$passed" >> $GITHUB_OUTPUT
+
+    # HTML REPORT — always runs
+    - name: Generate HTML report
+      if: always()
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/generate_report.py" \
+          --language "${{ inputs.language }}" \
+          --coverage-path "${{ inputs.coverage_report_path }}" \
+          --coverage-pct "${{ steps.coverage-check.outputs.pct }}" \
+          --threshold "${{ inputs.coverage_threshold }}" \
+          --unit-outcome "${{ steps.unit-tests.outcome }}" \
+          --integration-outcome "${{ steps.integration-tests.outcome }}" \
+          --output "pipeline-report.html"
+
+    - name: Upload HTML report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: pipeline-report
+        path: pipeline-report.html
+        retention-days: 30

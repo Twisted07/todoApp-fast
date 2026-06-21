@@ -1,0 +1,240 @@
+# =============================================================================
+# ci.yml — Continuous Integration
+# Runs on every push and pull request.
+# Stages: validate → build → test+quality (parallel) → security
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+
+  # Allow manual trigger from the Actions tab
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch when a new commit is pushed
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # JOB 1 — Validate config
+  # The contract that all downstream jobs depend on.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: Validate pipeline config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      language:            ${{ steps.cfg.outputs.language }}
+      version:             ${{ steps.cfg.outputs.version }}
+      deploy_target:       ${{ steps.cfg.outputs.deploy_target }}
+      coverage_threshold:  ${{ steps.cfg.outputs.coverage_threshold }}
+      lint_strictness:     ${{ steps.cfg.outputs.lint_strictness }}
+      analysis_strictness: ${{ steps.cfg.outputs.analysis_strictness }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python (for validator)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install pyyaml --quiet --break-system-packages
+
+      - name: Validate pipeline.config.yml
+        id: cfg
+        run: python3 .github/actions/setup/validate_config.py
+
+  # ---------------------------------------------------------------------------
+  # JOB 2 — Build
+  # Installs runtime, installs deps, compiles, uploads artifact.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJson(vars.PIPELINE_TIMEOUT || '30') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read config values
+        id: cfg
+        run: |
+          pip install pyyaml --quiet --break-system-packages
+          python3 -c "
+          import yaml, os
+          cfg = yaml.safe_load(open('pipeline.config.yml'))
+          def g(*keys):
+              v = cfg
+              for k in keys: v = (v or {}).get(k, '')
+              return v or ''
+          out = os.environ.get('GITHUB_OUTPUT', '')
+          with open(out, 'a') as f:
+              f.write(f'install_cmd={g(\"build\",\"install_command\")}\n')
+              f.write(f'build_cmd={g(\"build\",\"build_command\")}\n')
+              f.write(f'artifact_path={g(\"build\",\"artifact_path\")}\n')
+          "
+
+      - name: Setup runtime and build
+        uses: ./.github/actions/setup
+        with:
+          language:        ${{ needs.validate.outputs.language }}
+          version:         ${{ needs.validate.outputs.version }}
+          install_command: ${{ steps.cfg.outputs.install_cmd }}
+          build_command:   ${{ steps.cfg.outputs.build_cmd }}
+          artifact_path:   ${{ steps.cfg.outputs.artifact_path }}
+
+  # ---------------------------------------------------------------------------
+  # JOB 3a — Test + quality
+  # Runs in parallel with security (3b) after build completes.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test and quality
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJson(vars.PIPELINE_TIMEOUT || '30') }}
+
+    outputs:
+      coverage_pct: ${{ steps.run-tests.outputs.coverage_pct }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python (for test helpers)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read test config values
+        id: cfg
+        run: |
+          pip install pyyaml --quiet --break-system-packages
+          python3 -c "
+          import yaml, os
+          cfg = yaml.safe_load(open('pipeline.config.yml'))
+          def g(*keys, default=''):
+              v = cfg
+              for k in keys: v = (v or {}).get(k, default)
+              return v if v is not None else default
+          out = os.environ.get('GITHUB_OUTPUT', '')
+          with open(out, 'a') as f:
+              f.write(f'unit_cmd={g(\"test\",\"unit_command\")}\n')
+              f.write(f'integ_cmd={g(\"test\",\"integration_command\")}\n')
+              f.write(f'cov_cmd={g(\"test\",\"coverage_command\")}\n')
+              f.write(f'cov_path={g(\"test\",\"coverage_report_path\",default=\"coverage/\")}\n')
+              f.write(f'quality_enabled={str(g(\"quality\",\"enabled\",default=True)).lower()}\n')
+              f.write(f'lint_config={g(\"quality\",\"lint_config_path\")}\n')
+              f.write(f'analysis_level={g(\"quality\",\"analysis_level\",default=5)}\n')
+          "
+
+      - name: Setup project runtime
+        uses: ./.github/actions/setup
+        with:
+          language:        ${{ needs.validate.outputs.language }}
+          version:         ${{ needs.validate.outputs.version }}
+          install_command: ""   # deps already cached from build job
+          build_command:   ""
+
+      - name: Run tests and quality checks
+        id: run-tests
+        uses: ./.github/actions/test
+        with:
+          language:             ${{ needs.validate.outputs.language }}
+          unit_command:         ${{ steps.cfg.outputs.unit_cmd }}
+          integration_command:  ${{ steps.cfg.outputs.integ_cmd }}
+          coverage_command:     ${{ steps.cfg.outputs.cov_cmd }}
+          coverage_threshold:   ${{ needs.validate.outputs.coverage_threshold }}
+          coverage_report_path: ${{ steps.cfg.outputs.cov_path }}
+          quality_enabled:      ${{ steps.cfg.outputs.quality_enabled }}
+          lint_strictness:      ${{ needs.validate.outputs.lint_strictness }}
+          analysis_strictness:  ${{ needs.validate.outputs.analysis_strictness }}
+          lint_config_path:     ${{ steps.cfg.outputs.lint_config }}
+          analysis_level:       ${{ steps.cfg.outputs.analysis_level }}
+
+  # ---------------------------------------------------------------------------
+  # JOB 3b — Security
+  # Runs in parallel with test (3a) after build completes.
+  # ---------------------------------------------------------------------------
+  security:
+    name: Security scan
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Required for dependency-review-action on PRs
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python (for security helpers)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read security config values
+        id: cfg
+        run: |
+          pip install pyyaml --quiet --break-system-packages
+          python3 -c "
+          import yaml, os
+          cfg = yaml.safe_load(open('pipeline.config.yml'))
+          sec = cfg.get('security', {})
+          out = os.environ.get('GITHUB_OUTPUT', '')
+          with open(out, 'a') as f:
+              f.write(f'dep_scan={str(sec.get(\"dependency_scan\", True)).lower()}\n')
+              f.write(f'secret_scan={str(sec.get(\"secret_detection\", True)).lower()}\n')
+              f.write(f'fail_on_high={str(sec.get(\"fail_on_high\", True)).lower()}\n')
+          "
+
+      - name: Run security scans
+        uses: ./.github/actions/security
+        with:
+          language:         ${{ needs.validate.outputs.language }}
+          dependency_scan:  ${{ steps.cfg.outputs.dep_scan }}
+          secret_detection: ${{ steps.cfg.outputs.secret_scan }}
+          fail_on_high:     ${{ steps.cfg.outputs.fail_on_high }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # JOB 4 — CI gate
+  # Lightweight job that only succeeds if both test and security pass.
+  # The deploy workflow waits on this job — not on test/security directly.
+  # This means only ONE job needs to be checked in branch protection rules.
+  # ---------------------------------------------------------------------------
+  ci-gate:
+    name: CI gate
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Check all jobs passed
+        run: |
+          test_result="${{ needs.test.result }}"
+          sec_result="${{ needs.security.result }}"
+          echo "Test result:     $test_result"
+          echo "Security result: $sec_result"
+          if [ "$test_result" != "success" ] || [ "$sec_result" != "success" ]; then
+            echo "::error::CI failed. All checks must pass before deploying."
+            exit 1
+          fi
+          echo "All CI checks passed."

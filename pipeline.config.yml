@@ -1,0 +1,226 @@
+# =============================================================================
+# pipeline.config.yml
+# Lightweight DevOps Pipeline — Project Configuration
+# =============================================================================
+# This is the ONLY file your team needs to edit.
+# Fill in the values below and the pipeline handles the rest.
+# Full documentation: .github/docs/SETUP.md
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# PROJECT
+# -----------------------------------------------------------------------------
+project:
+  name: "todoApp-fast"            # Used in notifications and reports
+  environment: "production"     # Target environment label
+
+
+# -----------------------------------------------------------------------------
+# LANGUAGE & RUNTIME
+# Supported: node | python | java | go | csharp | php
+# The pipeline auto-selects the correct setup, install, and build steps.
+#
+# Version reference:
+#   node   → "20", "18", "16"
+#   python → "3.12", "3.11", "3.10"
+#   java   → "21", "17", "11"
+#   go     → "1.22", "1.21"
+#   csharp → "8.0", "7.0", "6.0"   (dotnet SDK version)
+#   php    → "8.3", "8.2", "8.1"
+# -----------------------------------------------------------------------------
+runtime:
+  language: "python"              # node | python | java | go | csharp | php
+  version: "3.12"                 # See version reference above
+
+
+# -----------------------------------------------------------------------------
+# BUILD
+#
+# install_command examples by language:
+#   node   → "npm ci"
+#   python → "pip install -r requirements.txt"
+#   java   → "mvn -B dependency:resolve"  (or leave "" for Gradle auto-resolve)
+#   go     → "go mod download"
+#   csharp → "dotnet restore"
+#   php    → "composer install --no-interaction --prefer-dist"
+#
+# build_command examples:
+#   node   → "npm run build"
+#   python → ""                (usually no compile step)
+#   java   → "mvn -B package -DskipTests"
+#   go     → "go build ./..."
+#   csharp → "dotnet build --no-restore --configuration Release"
+#   php    → ""                (usually no compile step)
+# -----------------------------------------------------------------------------
+build:
+  install_command: "uv run pip3 install -r requirements.txt"      # Command to install dependencies (required)
+  build_command: "uv sync --frozen && uv cache prune --ci" # Set to "" if your project has no build step
+  artifact_path: ""         # Path to output directory (uploaded between stages)
+                                 # Set to "" if no artifact is produced
+
+
+# -----------------------------------------------------------------------------
+# TEST
+#
+# unit_command examples:
+#   node   → "npm test"
+#   python → "pytest tests/unit"
+#   java   → "mvn -B test"
+#   go     → "go test ./... -short"
+#   csharp → "dotnet test --no-build --filter Category=Unit"
+#   php    → "vendor/bin/phpunit --testsuite unit"
+#
+# integration_command examples (leave "" to skip):
+#   node   → "npm run test:integration"
+#   python → "pytest tests/integration"
+#   java   → "mvn -B verify -Pintegration"
+#   go     → "go test ./... -run Integration"
+#   csharp → "dotnet test --no-build --filter Category=Integration"
+#   php    → "vendor/bin/phpunit --testsuite integration"
+#
+# coverage_command examples:
+#   node   → "npm run coverage"
+#   python → "pytest --cov=src --cov-report=xml"
+#   java   → "mvn -B jacoco:report"
+#   go     → "go test ./... -coverprofile=coverage.out"
+#   csharp → "dotnet test --collect:'XPlat Code Coverage'"
+#   php    → "vendor/bin/phpunit --coverage-clover coverage.xml"
+# -----------------------------------------------------------------------------
+test:
+  unit_command: "pytest tests/unit"              # Command to run unit tests (required)
+  integration_command: ""               # Command to run integration tests (leave "" to skip)
+  coverage_command: "pytest --cov=src --cov-report=xml"  # Command that generates coverage report
+  coverage_threshold: 70                # Minimum % coverage required to pass (0 to disable)
+  coverage_report_path: "coverage/"     # Path where coverage report is written
+
+
+# -----------------------------------------------------------------------------
+# CODE QUALITY
+# Runs alongside tests in the Test stage — no extra stage, no extra time.
+# Each language uses its native tooling — no third-party accounts required.
+#
+# lint_strictness:
+#   strict → pipeline fails on any lint error
+#   warn   → issues annotated on the PR but pipeline continues
+#            (recommended for new projects cleaning up an existing codebase)
+#
+# analysis_strictness:
+#   strict → pipeline fails on any static analysis finding
+#   warn   → findings reported but pipeline continues
+#
+# Tool reference by language:
+#   node   → ESLint          (requires .eslintrc in repo)
+#   python → Flake8 + Pylint (uses setup.cfg or .flake8 if present)
+#   java   → Checkstyle + SpotBugs
+#   go     → golangci-lint + go vet
+#   csharp → dotnet-format + Roslyn analyzers
+#   php    → PHP_CodeSniffer + PHPStan
+# -----------------------------------------------------------------------------
+quality:
+  enabled: true                   # Set to false to skip quality checks entirely
+  lint_strictness: "warn"         # strict | warn
+  analysis_strictness: "warn"   # strict | warn
+  exclude_paths:                  # Paths to exclude from quality checks
+    - "vendor/"
+    - "node_modules/"
+    - "dist/"
+    - "build/"
+    - "*.generated.*"
+
+  # Path to your lint config file. Leave "" to use tool defaults.
+  # e.g. ".eslintrc.json", "setup.cfg", "checkstyle.xml", "phpcs.xml"
+  lint_config_path: ""
+
+  # Analysis depth — higher is stricter (ignored by non-applicable languages)
+  # PHPStan: 0–8  |  Pylint: 0–10
+  analysis_level: 5
+
+
+# -----------------------------------------------------------------------------
+# SECURITY
+# GitHub-native tools only — no third-party accounts or tokens required.
+# -----------------------------------------------------------------------------
+security:
+  dependency_scan: true         # Enable Dependabot dependency scanning
+  secret_detection: true        # Enable GitHub push protection (secret scanning)
+  fail_on_high: true            # Fail the pipeline if high-severity vulnerabilities found
+
+
+# -----------------------------------------------------------------------------
+# DEPLOY
+# Supported targets: vercel | railway | heroku | custom
+# Only the section matching your target needs to be filled in.
+# -----------------------------------------------------------------------------
+deploy:
+  target: "render"             # vercel | railway | heroku | render | custom
+
+  staging:
+    auto_deploy: true           # Deploy to staging automatically on every merge to main
+    branch: "main"              # Branch that triggers staging deploy
+
+  production:
+    manual_approval: true       # Require a human to approve before deploying to production
+    approvers: []               # GitHub usernames who can approve e.g. ["alice", "bob"]
+                                # Leave empty to allow any repo collaborator to approve
+
+  # -- Vercel --
+  # Required secrets: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID
+  vercel:
+    project_id: ""              # From your Vercel dashboard
+    org_id: ""                  # From your Vercel dashboard
+
+  # -- Railway --
+  # Required secrets: RAILWAY_TOKEN
+  railway:
+    service_id: ""              # From your Railway project settings
+    environment: "production"   # Railway environment name
+
+  # -- Heroku --
+  # Required secrets: HEROKU_API_KEY
+  heroku:
+    app_name: ""                # Your Heroku app name
+
+  # -- Render --
+  # Required secrets: RENDER_API_KEY
+  # Render deploys via its REST API — no CLI installation required.
+  # service_id:         your production service  (Settings → Service ID, starts with 'srv-')
+  # staging_service_id: a separate Render service for staging (leave "" to skip staging deploy)
+  #                     Recommended: create a second service in Render connected to the same repo
+  render:
+    service_id: "srv-d8rsmj4m0tmc739o4fp0"              # e.g. "srv-abc123"
+    staging_service_id: ""      # e.g. "srv-xyz789" — leave "" to skip staging on Render
+
+  # -- Custom --
+  # Use this if your deploy target isn't listed above.
+  # The pipeline will run your command as-is inside the runner.
+  custom:
+    staging_command: ""         # e.g. "scp -r dist/ user@server:/var/www/staging"
+    production_command: ""      # e.g. "scp -r dist/ user@server:/var/www/production"
+
+
+# -----------------------------------------------------------------------------
+# NOTIFICATIONS
+# All channels are optional. Leave empty to disable.
+# -----------------------------------------------------------------------------
+notifications:
+  on_failure: true              # Notify when pipeline fails
+  on_success: false             # Notify when pipeline succeeds (can be noisy)
+
+  # Slack: requires SLACK_WEBHOOK_URL secret
+  slack:
+    enabled: false
+    channel: "#deployments"
+
+  # Email: uses GitHub's built-in email notifications — no extra config needed
+  email:
+    enabled: true
+
+
+# -----------------------------------------------------------------------------
+# ADVANCED (safe to ignore for most projects)
+# -----------------------------------------------------------------------------
+advanced:
+  timeout_minutes: 30           # Max minutes a single job can run before being cancelled
+  cancel_in_progress: true      # Cancel outdated runs when a new commit is pushed
+  runner: "ubuntu-latest"       # GitHub-hosted runner OS

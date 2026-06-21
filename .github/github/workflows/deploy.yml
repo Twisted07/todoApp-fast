@@ -1,0 +1,279 @@
+# =============================================================================
+# deploy.yml — Deployment workflow
+#
+# Triggered automatically after ci.yml passes on main.
+#
+# Flow:
+#   deploy-staging   → runs automatically on every merge to main
+#   deploy-production → requires manual approval via GitHub Environments
+#
+# Setup required (one time, in your GitHub repo):
+#   1. Go to Settings → Environments
+#   2. Create two environments: "staging" and "production"
+#   3. On "production": enable "Required reviewers" and add approvers
+#   4. Add your deploy secrets to each environment
+#
+# Secrets needed per target (add under Settings → Secrets → Actions):
+#   Vercel  → VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID
+#   Railway → RAILWAY_TOKEN
+#   Heroku  → HEROKU_API_KEY
+# =============================================================================
+
+name: Deploy
+
+on:
+  # Trigger after CI passes on main
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+  # Allow manual deploy from the Actions tab
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options: [staging, production]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false    # Never cancel a deploy mid-flight
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Guard — only proceed if the triggering CI run succeeded
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Check CI status
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+
+    steps:
+      - name: Confirm CI passed
+        id: check
+        run: |
+          echo "proceed=true" >> $GITHUB_OUTPUT
+          echo "CI passed — proceeding to deploy."
+
+  # ---------------------------------------------------------------------------
+  # Read config — shared between staging and production jobs
+  # ---------------------------------------------------------------------------
+  read-config:
+    name: Read pipeline config
+    needs: guard
+    runs-on: ubuntu-latest
+
+    outputs:
+      language:         ${{ steps.cfg.outputs.language }}
+      version:          ${{ steps.cfg.outputs.version }}
+      deploy_target:    ${{ steps.cfg.outputs.deploy_target }}
+      project_name:     ${{ steps.cfg.outputs.project_name }}
+      auto_deploy:      ${{ steps.cfg.outputs.auto_deploy }}
+      manual_approval:  ${{ steps.cfg.outputs.manual_approval }}
+      railway_svc_id:   ${{ steps.cfg.outputs.railway_svc_id }}
+      railway_env:      ${{ steps.cfg.outputs.railway_env }}
+      heroku_app:       ${{ steps.cfg.outputs.heroku_app }}
+      vercel_project:   ${{ steps.cfg.outputs.vercel_project }}
+      vercel_org:       ${{ steps.cfg.outputs.vercel_org }}
+      render_svc_id:    ${{ steps.cfg.outputs.render_svc_id }}
+      render_staging_id: ${{ steps.cfg.outputs.render_staging_id }}
+      production_cmd:   ${{ steps.cfg.outputs.production_cmd }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Parse pipeline.config.yml
+        id: cfg
+        run: |
+          pip install pyyaml --quiet --break-system-packages
+          python3 -c "
+          import yaml, os
+          cfg  = yaml.safe_load(open('pipeline.config.yml'))
+          rt   = cfg.get('runtime', {})
+          dep  = cfg.get('deploy', {})
+          proj = cfg.get('project', {})
+          out  = os.environ.get('GITHUB_OUTPUT', '')
+
+          def w(f, k, v): f.write(f'{k}={v}\n')
+
+          with open(out, 'a') as f:
+              w(f, 'language',        rt.get('language', 'node'))
+              w(f, 'version',         rt.get('version', '20'))
+              w(f, 'deploy_target',   dep.get('target', ''))
+              w(f, 'project_name',    proj.get('name', 'project'))
+              w(f, 'auto_deploy',     str(dep.get('staging',{}).get('auto_deploy', True)).lower())
+              w(f, 'manual_approval', str(dep.get('production',{}).get('manual_approval', True)).lower())
+              w(f, 'railway_svc_id',  dep.get('railway',{}).get('service_id', ''))
+              w(f, 'railway_env',     dep.get('railway',{}).get('environment', 'production'))
+              w(f, 'heroku_app',      dep.get('heroku',{}).get('app_name', ''))
+              w(f, 'vercel_project',  dep.get('vercel',{}).get('project_id', ''))
+              w(f, 'vercel_org',      dep.get('vercel',{}).get('org_id', ''))
+              w(f, 'render_svc_id',   dep.get('render',{}).get('service_id', ''))
+              w(f, 'render_staging_id', dep.get('render',{}).get('staging_service_id', ''))
+              w(f, 'staging_cmd',     dep.get('custom',{}).get('staging_command', ''))
+              w(f, 'production_cmd',  dep.get('custom',{}).get('production_command', ''))
+          "
+
+  # ---------------------------------------------------------------------------
+  # STAGING — automatic deploy on every merge to main
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to staging
+    needs: [guard, read-config]
+    runs-on: ubuntu-latest
+    if: needs.read-config.outputs.auto_deploy == 'true'
+
+    # GitHub Environment — add staging secrets here in repo settings
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.deploy_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # needed for heroku git push
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run deploy (staging)
+        id: deploy
+        uses: ./.github/actions/deploy
+        with:
+          environment:       staging
+          target:            ${{ needs.read-config.outputs.deploy_target }}
+          language:          ${{ needs.read-config.outputs.language }}
+          project_name:      ${{ needs.read-config.outputs.project_name }}
+          # Vercel
+          vercel_token:      ${{ secrets.VERCEL_TOKEN }}
+          vercel_org_id:     ${{ secrets.VERCEL_ORG_ID }}
+          vercel_project_id: ${{ needs.read-config.outputs.vercel_project }}
+          # Railway
+          railway_token:     ${{ secrets.RAILWAY_TOKEN }}
+          railway_service_id: ${{ needs.read-config.outputs.railway_svc_id }}
+          railway_environment: staging
+          # Heroku
+          heroku_api_key:    ${{ secrets.HEROKU_API_KEY }}
+          heroku_app_name:   ${{ needs.read-config.outputs.heroku_app }}
+          # Render
+          render_api_key:    ${{ secrets.RENDER_API_KEY }}
+          render_service_id: ${{ needs.read-config.outputs.render_svc_id }}
+          render_staging_service_id: ${{ needs.read-config.outputs.render_staging_id }}
+          # Custom
+          custom_command:    ${{ needs.read-config.outputs.staging_cmd }}
+
+      - name: Comment staging URL on PR
+        if: steps.deploy.outputs.deploy_url != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = '${{ steps.deploy.outputs.deploy_url }}';
+            const sha = context.sha.substring(0, 7);
+            // Find related PR
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              commit_sha: context.sha,
+            });
+            for (const pr of prs.data) {
+              await github.rest.issues.createComment({
+                owner:    context.repo.owner,
+                repo:     context.repo.repo,
+                issue_number: pr.number,
+                body: `🚀 **Staging deploy** for \`${sha}\` is live:\n${url}`,
+              });
+            }
+
+  # ---------------------------------------------------------------------------
+  # PRODUCTION — requires manual approval via GitHub Environment
+  #
+  # To enable the approval gate:
+  #   1. Go to Settings → Environments → production
+  #   2. Check "Required reviewers"
+  #   3. Add reviewer GitHub usernames from pipeline.config.yml approvers list
+  #
+  # The job will pause here and send a notification to reviewers.
+  # They approve or reject directly in the GitHub UI or by email.
+  # ---------------------------------------------------------------------------
+  deploy-production:
+    name: Deploy to production
+    needs: [guard, read-config, deploy-staging]
+    runs-on: ubuntu-latest
+
+    # GitHub Environment with protection rules = the approval gate
+    # No code needed — GitHub handles the pause and notification.
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.deploy_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run deploy (production)
+        id: deploy
+        uses: ./.github/actions/deploy
+        with:
+          environment:         production
+          target:              ${{ needs.read-config.outputs.deploy_target }}
+          language:            ${{ needs.read-config.outputs.language }}
+          project_name:        ${{ needs.read-config.outputs.project_name }}
+          # Vercel
+          vercel_token:        ${{ secrets.VERCEL_TOKEN }}
+          vercel_org_id:       ${{ secrets.VERCEL_ORG_ID }}
+          vercel_project_id:   ${{ needs.read-config.outputs.vercel_project }}
+          # Railway
+          railway_token:       ${{ secrets.RAILWAY_TOKEN }}
+          railway_service_id:  ${{ needs.read-config.outputs.railway_svc_id }}
+          railway_environment: ${{ needs.read-config.outputs.railway_env }}
+          # Heroku
+          heroku_api_key:      ${{ secrets.HEROKU_API_KEY }}
+          heroku_app_name:     ${{ needs.read-config.outputs.heroku_app }}
+          # Render
+          render_api_key:      ${{ secrets.RENDER_API_KEY }}
+          render_service_id:   ${{ needs.read-config.outputs.render_svc_id }}
+          render_staging_service_id: ${{ needs.read-config.outputs.render_staging_id }}
+          # Custom
+          custom_command:      ${{ needs.read-config.outputs.production_cmd }}
+
+      - name: Create GitHub deployment status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status  = '${{ steps.deploy.outputs.deploy_status }}';
+            const url     = '${{ steps.deploy.outputs.deploy_url }}';
+            const state   = status === 'success' ? 'success' : 'failure';
+            await github.rest.repos.createDeploymentStatus({
+              owner:           context.repo.owner,
+              repo:            context.repo.repo,
+              deployment_id:   context.payload.deployment?.id || 0,
+              state,
+              environment_url: url || undefined,
+              description:     `Production deploy ${state}`,
+            });

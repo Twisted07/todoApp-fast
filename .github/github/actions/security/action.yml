@@ -1,0 +1,107 @@
+name: "Security scan"
+description: "Runs GitHub-native dependency scanning and secret detection. No third-party tokens required."
+
+inputs:
+  fail_on_high:
+    description: "Fail the pipeline if high-severity vulnerabilities are found"
+    required: false
+    default: "true"
+  dependency_scan:
+    description: "Enable dependency vulnerability scanning"
+    required: false
+    default: "true"
+  secret_detection:
+    description: "Enable secret scanning check"
+    required: false
+    default: "true"
+  language:
+    description: "Runtime language — used to pick the right manifest file"
+    required: true
+
+outputs:
+  scan_passed:
+    description: "true if security stage passed"
+    value: ${{ steps.gate.outputs.passed }}
+  vulnerability_count:
+    description: "Number of vulnerabilities found (high+critical)"
+    value: ${{ steps.dep-scan.outputs.vuln_count }}
+
+runs:
+  using: "composite"
+  steps:
+
+    # =========================================================================
+    # DEPENDENCY SCANNING
+    # Uses GitHub's native dependency review + Dependabot alerts.
+    # On PRs: uses the dependency-review-action (compares base vs head).
+    # On push to main: runs a lightweight manifest audit per language.
+    # =========================================================================
+
+    - name: Dependency review (PR only)
+      if: inputs.dependency_scan == 'true' && github.event_name == 'pull_request'
+      uses: actions/dependency-review-action@v4
+      with:
+        fail-on-severity: ${{ inputs.fail_on_high == 'true' && 'high' || 'critical' }}
+        deny-licenses: "GPL-2.0, AGPL-3.0"   # adjust to your project's license policy
+
+    - name: Dependency audit (push to main)
+      id: dep-scan
+      if: inputs.dependency_scan == 'true' && github.event_name != 'pull_request'
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/run_dependency_audit.py" \
+          --language "${{ inputs.language }}" \
+          --fail-on-high "${{ inputs.fail_on_high }}"
+
+    # =========================================================================
+    # SECRET DETECTION
+    # GitHub push protection blocks secrets at push time (repo setting).
+    # This step checks that push protection is actually enabled and warns
+    # if it has been bypassed or is not configured, without blocking CI.
+    # =========================================================================
+
+    - name: Verify secret scanning posture
+      id: secret-scan
+      if: inputs.secret_detection == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO:     ${{ github.repository }}
+      run: |
+        python3 "${{ github.action_path }}/check_secret_scanning.py" \
+          --repo "$REPO" \
+          --token "$GH_TOKEN"
+
+    # =========================================================================
+    # GATE
+    # =========================================================================
+    - name: Evaluate security gate
+      id: gate
+      shell: bash
+      run: |
+        passed=true
+        dep_outcome="${{ steps.dep-scan.outcome }}"
+        secret_outcome="${{ steps.secret-scan.outcome }}"
+
+        if [ "$dep_outcome" = "failure" ]; then
+          echo "::error::Dependency scan failed. Review vulnerabilities before merging."
+          passed=false
+        fi
+        if [ "$secret_outcome" = "failure" ]; then
+          echo "::error::Secret scanning check failed."
+          passed=false
+        fi
+        echo "passed=$passed" >> $GITHUB_OUTPUT
+
+    # =========================================================================
+    # SUMMARY — appended to the GitHub Actions job summary page
+    # =========================================================================
+    - name: Write security summary
+      if: always()
+      shell: bash
+      run: |
+        python3 "${{ github.action_path }}/write_summary.py" \
+          --language "${{ inputs.language }}" \
+          --dep-outcome "${{ steps.dep-scan.outcome }}" \
+          --secret-outcome "${{ steps.secret-scan.outcome }}" \
+          --vuln-count "${{ steps.dep-scan.outputs.vuln_count }}"
