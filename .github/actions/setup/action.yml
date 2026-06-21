@@ -37,16 +37,16 @@ runs:
         cache: "npm"
 
     # ── Python ───────────────────────────────────────────────────────────────
+    - name: Install uv
+      if: inputs.language == 'python'
+      uses: astral-sh/setup-uv@v5
+
     - name: Setup Python
       if: inputs.language == 'python'
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        
-      - name: Run actions/setup-python@v5
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ inputs.version }}
-          cache: "pip"
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.version }}
+        cache: "pip"    
 
     # ── Java ─────────────────────────────────────────────────────────────────
     - name: Setup Java
