@@ -92,7 +92,7 @@ test:
   integration_command: ""               # Command to run integration tests (leave "" to skip)
   coverage_command: "uv run pytest --cov=src --cov-report=xml"  # Command that generates coverage report
   coverage_threshold: 70                # Minimum % coverage required to pass (0 to disable)
-  coverage_report_path: "coverage/"     # Path where coverage report is written
+  coverage_report_path: ".coverage"     # Path where coverage report is written
 
 
 # -----------------------------------------------------------------------------
